@@ -24,7 +24,8 @@ Bayesian linear regression model to predict house sale prices using **JAGS** (Ju
 - Model robust to outliers thanks to Student-t likelihood
 
 ## View the Report
-- [PDF version](ABS2.pdf) ← direct link works on GitHub
+- [PDF version](ABS2.pdf) ← direct link works on GitHub (PRESENT UNDER OUTPUT SECTION)
 
 Built by Arka • Melbourne • 2026  
+
 Part of my data science / Bayesian portfolio
