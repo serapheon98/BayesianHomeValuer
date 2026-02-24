@@ -1,0 +1,19 @@
+model {
+  for (i in 1:Ntotal) {
+    SalePrice[i] ~ dt(mu[i], tau, nu)
+    mu[i] <- beta0 + beta1 * Area[i] + beta2 * Bedrooms[i] +
+             beta3 * Bathrooms[i] + beta4 * CarParks[i] +
+             beta5 * PropertyType[i]
+  }
+
+  beta0 ~ dnorm(0, 1.0E-5)
+  beta1 ~ dnorm(90, 1/(10^2))
+  beta2 ~ dnorm(100000, 1/(50000^2))
+  beta3 ~ dnorm(0, 1/(50000^2))
+  beta4 ~ dnorm(120000, 1/(5000^2))
+  beta5 ~ dnorm(-150000, 1/(10000^2))
+
+  tau <- pow(sigma, -2)
+  sigma ~ dunif(0, 100000)
+  nu ~ dexp(1)
+}

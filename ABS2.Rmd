@@ -1,0 +1,481 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(rjags)
+library(runjags)
+library(ks)
+```
+
+
+```{r}
+# Set working directory and load data
+setwd("C:/Users/ARKA/Sem 4/ABS")
+data = read.csv("C:/Users/ARKA/Sem 4/ABS/Assignment2PropertyPrices.csv")
+
+# Check the structure and first few rows of the dataset
+head(data)
+summary(data)
+colnames(data) 
+
+```
+
+## 
+```{r}
+# Exploratory Data Analysis
+# Define predictor and response variable names
+yName = "SalePrice.100K."
+xName = c("Area", "Bedrooms", "Bathrooms", "CarParks", "PropertyType")
+
+# Check the first few rows of the dataset
+head(data)
+class(data$SalePrice.100K.)
+
+
+# Histogram of SalePrice.100K.
+hist(data$SalePrice.100K., main="Histogram of Sale Prices", xlab="Sale Price (100K)")
+
+# Density plot of SalePrice.100K.
+plot(kde(data$SalePrice.100K.), main="Density of Sale Prices", xlab="Sale Price (100K)")
+
+```
+
+## 
+```{r}
+# Scatter plots for each predictor against SalePrice.100K.
+p1 <- ggplot(data, aes(x=Area, y=SalePrice.100K.)) + geom_point() + ggtitle("Area vs Sale Price")
+p2 <- ggplot(data, aes(x=Bedrooms, y=SalePrice.100K.)) + geom_point() + ggtitle("Bedrooms vs Sale Price")
+p3 <- ggplot(data, aes(x=Bathrooms, y=SalePrice.100K.)) + geom_point() + ggtitle("Bathrooms vs Sale Price")
+p4 <- ggplot(data, aes(x=CarParks, y=SalePrice.100K.)) + geom_point() + ggtitle("Car Parks vs Sale Price")
+p5 <- ggplot(data, aes(x=PropertyType, y=SalePrice.100K.)) + geom_point() + ggtitle("Property Type vs Sale Price")
+
+# Combine scatter plots into one figure
+figure <- ggarrange(p1, p2, p3, p4, p5, nrow=3, ncol=2)
+print(figure)
+# Summary statistics of the dataset
+summary(data)
+```
+
+## JAGS Model Definition
+```{r}
+# Define JAGS model with Student-t likelihood
+modelString = "
+  model {
+    for (i in 1:Ntotal) {
+      SalePrice[i] ~ dt(mu[i], tau, nu)
+      mu[i] <- beta0 + beta1 * Area[i] + beta2 * Bedrooms[i] +
+               beta3 * Bathrooms[i] + beta4 * CarParks[i] +
+               beta5 * PropertyType[i]
+    }
+    
+    # Priors for coefficients
+    beta0 ~ dnorm(0, 1.0E-5)    # Vague prior for intercept
+    beta1 ~ dnorm(90, 1/(10^2)) # Strong prior for Area
+    beta2 ~ dnorm(100000, 1/(50000^2)) # Weak prior for Bedrooms
+    beta3 ~ dnorm(0, 1/(50000^2)) # Vague prior for Bathrooms
+    beta4 ~ dnorm(120000, 1/(5000^2)) # Strong prior for CarParks
+    beta5 ~ dnorm(-150000, 1/(10000^2)) # Strong prior for PropertyType
+    
+    # Priors for error terms and degrees of freedom
+    tau <- pow(sigma, -2)
+    sigma ~ dunif(0, 100000)   # Uniform prior for scale parameter
+    nu ~ dexp(1)               # Exponential prior for degrees of freedom (robustness)
+  }
+"
+writeLines(modelString, con="PropertyPricesModel.txt")
+
+
+```
+
+```{r eval=FALSE}
+# Function to generate MCMC samples using JAGS
+library(runjags)
+library(coda)
+
+# Function to generate MCMC samples with runjags
+genMCMC = function(data, numSavedSteps=10000, thinSteps=1, nChains=3, saveName="PropertyPrices") {
+  
+  dataList = list(
+    SalePrice = data$SalePrice.100K.,  # Update to use correct column name
+    Area = data$Area,
+    Bedrooms = data$Bedrooms,
+    Bathrooms = data$Bathrooms,
+    CarParks = data$CarParks,
+    PropertyType = data$PropertyType,
+    Ntotal = nrow(data)
+  )
+  
+  parameters = c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "sigma", "nu")
+  
+  runJagsOut <- run.jags(
+    method="parallel",
+    model="PropertyPricesModel.txt",
+    monitor=parameters,
+    data=dataList,
+    n.chains=nChains,
+    adapt=500, burnin=5000,
+    sample=numSavedSteps, thin=thinSteps,
+    summarise=FALSE, plots=FALSE
+  )
+  
+  codaSamples = as.mcmc.list(runJagsOut)
+  
+  if (!is.null(saveName)) {
+    save(codaSamples, file=paste0(saveName, "_MCMC.Rdata"))
+  }
+  
+  return(codaSamples)
+}
+
+colnames(data)
+# Generate MCMC samples
+mcmcCoda = genMCMC(data=data, numSavedSteps=5000, thinSteps=5, nChains=3, saveName="PropertyPrices")
+
+
+
+```
+```{r}
+# MCMC Diagnostics
+# Load MCMC results
+load("PropertyPrices_MCMC.Rdata")
+
+# Check if codaSamples is loaded
+if (exists("codaSamples")) {
+  
+  # Define the diagnostics function
+  diagMCMC <- function(codaObject, parName, saveName=NULL, saveType="jpg") {
+    # Traceplot: Check the convergence
+    traceplot(codaObject[, parName], main = paste("Traceplot of", parName))
+    
+    # Density plot: Posterior distribution
+    densplot(codaObject[, parName], main = paste("Density of", parName))
+    
+    # Autocorrelation plot: Check for correlation in the chains
+    autocorr.plot(codaObject[, parName], main = paste("Autocorrelation of", parName))
+    
+    # Effective sample size: Assess the number of independent samples
+    ess <- effectiveSize(codaObject[, parName])
+    cat("Effective Sample Size of", parName, ":", ess, "\n")
+    
+    # Gelman-Rubin diagnostic: Check for convergence across chains
+    gr <- gelman.diag(codaObject[, parName])$psrf[1]
+    cat("Gelman-Rubin Diagnostic (PSRF) of", parName, ":", gr, "\n")
+    
+    # Save plots if a saveName is provided
+    if (!is.null(saveName)) {
+      dev.copy(jpeg, paste0(saveName, "_Trace_", parName, ".", saveType))
+      dev.off()
+      
+      dev.copy(jpeg, paste0(saveName, "_Density_", parName, ".", saveType))
+      dev.off()
+      
+      dev.copy(jpeg, paste0(saveName, "_Autocorr_", parName, ".", saveType))
+      dev.off()
+    }
+  }
+
+  # Apply diagnostics to all parameters
+  parameterNames <- varnames(codaSamples)  # Use codaSamples instead of mcmcCoda
+  for (parName in parameterNames) {
+    diagMCMC(codaObject = codaSamples, parName = parName, saveName = "PropertyPrice", saveType = "jpg")
+  }
+} else {
+  cat("The object 'codaSamples' does not exist in the loaded data.\n")
+}
+
+
+```
+```{r, echo=TRUE, fig.width=7, fig.height=5}
+source("C:/Users/ARKA/Sem 4/ABS/DBDA2E-utilities.R")
+
+parameterNames <- varnames(codaSamples)
+
+# Loop through each parameter and generate the diagnostic plots
+for (parName in parameterNames) {
+  diagMCMC(
+    codaObject = codaSamples,  # MCMC samples
+    parName = parName,  # Parameter name to plot
+    saveName = NULL,  # Set to NULL to display the plot interactively
+    saveType = NULL  # Set to NULL to avoid saving the plot
+  )
+}
+
+
+```
+
+
+
+```{r}
+# Function to summarize MCMC samples
+smryMCMC = function(codaSamples, saveName=NULL) {
+  summaryInfo = as.matrix(summary(codaSamples)$statistics)
+  if (!is.null(saveName)) {
+    write.csv(summaryInfo, file=paste0(saveName, "_Summary.csv"))
+  }
+  return(summaryInfo)
+}
+
+# Call smryMCMC to summarize the MCMC samples
+summaryInfo = smryMCMC(codaSamples, saveName="PropertyPrices") 
+print(summaryInfo)
+
+
+```
+## Posterior Predictive Checks
+```{r}
+# Simulate SalePrice predictions from the posterior
+predictSalePrice = function(codaSamples, data, numSim=1000) {
+  betaPosterior = as.matrix(codaSamples)
+  
+  # Draw samples of SalePrice from posterior predictive distribution
+  predictions = matrix(NA, nrow=numSim, ncol=nrow(data))
+  for (i in 1:numSim) {
+    beta = betaPosterior[sample(1:nrow(betaPosterior), 1), ]
+    for (j in 1:nrow(data)) {
+      mu_j = beta[1] + beta[2] * data$Area[j] + beta[3] * data$Bedrooms[j] + 
+             beta[4] * data$Bathrooms[j] + beta[5] * data$CarParks[j] + 
+             beta[6] * data$PropertyType[j]
+      predictions[i, j] = rt(1, beta[7]) * beta[8] + mu_j # Student-t predictive
+    }
+  }
+  
+  return(predictions)
+}
+
+# Generate predictions
+predictedPrices = predictSalePrice(codaSamples, data, numSim=1000)
+
+# Posterior predictive checks using density plot
+plotDensity = function(observed, predictions) {
+  plot(density(observed), col="blue", main="Posterior Predictive vs Observed", xlab="Sale Price")
+  lines(density(predictions), col="red")
+  legend("topright", legend=c("Observed", "Predicted"), col=c("blue", "red"), lwd=2)
+}
+
+# Compare the predicted vs observed sale prices
+plotDensity(data$SalePrice.100K., predictedPrices)
+```
+
+
+## Posterior Distributions
+```{r}
+# Function to plot posterior distributions of the parameters
+plotMCMC = function(codaSamples, data, xName, yName, pairsPlot=FALSE, saveName=NULL, saveType="jpg") {
+  mcmcMat = as.matrix(codaSamples, chains=TRUE)
+  par(mfrow=c(3, 2))  # Adjust plot layout to fit all histograms
+  for (i in 1:5) {
+    hist(mcmcMat[,i], main=paste("Posterior of", xName[i]), xlab=xName[i])
+  }
+  
+  if (pairsPlot) {
+    pairs(mcmcMat[,1:length(xName)], main="Pairs Plot")
+  }
+  
+  if (!is.null(saveName)) {
+    dev.copy(jpeg, paste0(saveName, "_Posterior.", saveType))
+    dev.off()
+  }
+}
+```
+
+
+```{r}
+plotMCMC <- function(mcmcCoda, saveName = NULL, saveType = NULL) {
+  # Mapping parameter names to more meaningful labels
+  parameterLabels <- c(
+    "Intercept",     # beta0
+    "Area",          # beta1
+    "Bedrooms",      # beta2
+    "Bathrooms",     # beta3
+    "Carparks",      # beta4
+    "Property Type"  # beta5
+  )
+  
+  # Extract parameter names from MCMC samples
+  parameterNames <- varnames(mcmcCoda)
+  numParams <- length(parameterNames)
+  
+  # Set up layout for multiple plots (2 rows, 3 columns)
+  par(mfrow = c(2, 3))  # Adjust this based on the number of parameters and desired layout
+  
+  # Loop through each parameter and generate the posterior distribution plots
+  for (i in 1:numParams) {
+    # Get the parameter name and corresponding label
+    parName <- parameterNames[i]
+    parLabel <- parameterLabels[i]
+    
+    # Display or save the posterior distribution for each parameter
+    plotPost(
+      paramSampleVec = mcmcCoda[, parName],
+      main = paste(parLabel),          # Title with human-readable label
+      xlab = paste0(parLabel, " Posterior Distribution"),  # X-axis label
+      showCurve = TRUE                # Show the density curve
+    )
+  }
+  
+  # Reset the plotting layout after
+  par(mfrow = c(1, 1))
+  
+  # Save if required
+  if (!is.null(saveName) && !is.null(saveType)) {
+    saveGraph(file = saveName, type = saveType)
+  }
+}
+
+# Assuming codaSamples contains your MCMC samples
+plotMCMC(
+  mcmcCoda = codaSamples,  # MCMC samples
+  saveName = NULL,          # Set to NULL to display inline
+  saveType = NULL           # Set to NULL to display inline
+)
+
+
+```
+
+
+
+
+```{r}
+# Define new properties to predict
+# Prediction for new properties
+newProperties = data.frame(
+  Area = c(600, 800, 1500, 2500, 250),
+  Bedrooms = c(2, 3, 2, 5, 3),
+  Bathrooms = c(2, 1, 1, 4, 2),
+  CarParks = c(1, 2, 1, 4, 1),
+  PropertyType = c(1, 0, 0, 0, 1)
+)
+
+# Predict SalePrice for new properties using posterior means
+beta <- summaryInfo[1:6, 1]  # Use posterior means of beta0, beta1, ..., beta5
+predictedSalePrice <- cbind(rep(1, nrow(newProperties)), as.matrix(newProperties)) %*% beta
+print(predictedSalePrice)
+
+
+```
+
+
+
+```{r}
+# Diagnostic Plots for each parameter
+fileNameRoot <- "Ass2"  # Root for the saved file names
+graphFileType <- "jpeg"  # Save plots as JPEG
+parameterNames <- varnames(codaSamples)  # Extract parameter names from codaSamples
+
+# Loop to generate diagnostic plots for each parameter
+for (parName in parameterNames) {
+  diagMCMC(
+    codaObject = codaSamples,  # MCMC samples
+    parName = parName,  # Parameter name
+    saveName = fileNameRoot,  # Root name for the saved file
+    saveType = graphFileType  # File type (JPEG)
+  )
+}
+
+# Function to calculate 95% HDI for a vector of samples
+hdi <- function(sampleVec, credMass = 0.95) {
+  sortedPts <- sort(sampleVec)
+  ciIdxInc <- floor(credMass * length(sortedPts))
+  nCIs <- length(sortedPts) - ciIdxInc
+  ciWidth <- rep(0, nCIs)
+  
+  for (i in 1:nCIs) {
+    ciWidth[i] <- sortedPts[i + ciIdxInc] - sortedPts[i]
+  }
+  
+  HDImin <- sortedPts[which.min(ciWidth)]
+  HDImax <- sortedPts[which.min(ciWidth) + ciIdxInc]
+  
+  return(c(HDImin, HDImax))
+}
+
+# Convert MCMC samples to matrix
+pred_matrix <- as.matrix(codaSamples)
+
+# Extract posterior samples of the parameters
+beta0 <- pred_matrix[, "beta0"]
+beta1 <- pred_matrix[, "beta1"]
+beta2 <- pred_matrix[, "beta2"]
+beta3 <- pred_matrix[, "beta3"]
+beta4 <- pred_matrix[, "beta4"]
+beta5 <- pred_matrix[, "beta5"]
+
+# Define the xPred matrix (new properties)
+xPred <- array(NA, dim = c(5, 5))
+xPred[1, ] <- c(600, 2, 2, 1, 1)
+xPred[2, ] <- c(800, 3, 1, 2, 0)
+xPred[3, ] <- c(1500, 2, 1, 1, 0)
+xPred[4, ] <- c(2500, 5, 4, 4, 0)
+xPred[5, ] <- c(250, 3, 2, 1, 1)
+
+# Manually calculate predictions for each property
+pred1 <- beta0 + beta1 * xPred[1, 1] + beta2 * xPred[1, 2] + beta3 * xPred[1, 3] + beta4 * xPred[1, 4] + beta5 * xPred[1, 5]
+pred2 <- beta0 + beta1 * xPred[2, 1] + beta2 * xPred[2, 2] + beta3 * xPred[2, 3] + beta4 * xPred[2, 4] + beta5 * xPred[2, 5]
+pred3 <- beta0 + beta1 * xPred[3, 1] + beta2 * xPred[3, 2] + beta3 * xPred[3, 3] + beta4 * xPred[3, 4] + beta5 * xPred[3, 5]
+pred4 <- beta0 + beta1 * xPred[4, 1] + beta2 * xPred[4, 2] + beta3 * xPred[4, 3] + beta4 * xPred[4, 4] + beta5 * xPred[4, 5]
+pred5 <- beta0 + beta1 * xPred[5, 1] + beta2 * xPred[5, 2] + beta3 * xPred[5, 3] + beta4 * xPred[5, 4] + beta5 * xPred[5, 5]
+
+# Calculate 95% HDI for each prediction
+hdi_pred1 <- hdi(pred1)
+hdi_pred2 <- hdi(pred2)
+hdi_pred3 <- hdi(pred3)
+hdi_pred4 <- hdi(pred4)
+hdi_pred5 <- hdi(pred5)
+
+# Summarize Bayesian estimates (median) and HDI for each property
+summary_preds <- data.frame(
+  Property = c(1, 2, 3, 4, 5),
+  Estimate = c(median(pred1), median(pred2), median(pred3), median(pred4), median(pred5)),
+  HDI_Lower = c(hdi_pred1[1], hdi_pred2[1], hdi_pred3[1], hdi_pred4[1], hdi_pred5[1]),
+  HDI_Upper = c(hdi_pred1[2], hdi_pred2[2], hdi_pred3[2], hdi_pred4[2], hdi_pred5[2])
+)
+
+# Print the summary of predictions
+print(summary_preds)
+
+# Troubleshooting plot rendering (if plotPost doesn't display)
+dev.off()  # Close any previous plotting devices
+dev.new()  # Open a new plotting device
+
+# Plot posterior distributions for each prediction using plotPost()
+plotPost(pred1, showCurve = TRUE, xlab = "Prediction 1", main = "Property 1 Predicted Sale Price")
+plotPost(pred2, showCurve = TRUE, xlab = "Prediction 2", main = "Property 2 Predicted Sale Price")
+plotPost(pred3, showCurve = TRUE, xlab = "Prediction 3", main = "Property 3 Predicted Sale Price")
+plotPost(pred4, showCurve = TRUE, xlab = "Prediction 4", main = "Property 4 Predicted Sale Price")
+plotPost(pred5, showCurve = TRUE, xlab = "Prediction 5", main = "Property 5 Predicted Sale Price")
+
+# Alternative: ggplot2 to visualize posterior distributions if plotPost fails
+library(ggplot2)
+
+# Define a function to plot posterior distributions using ggplot2
+plot_posterior <- function(posterior_samples, property_num) {
+  df <- data.frame(value = posterior_samples)
+  
+  ggplot(df, aes(x = value)) +
+    geom_density(fill = "blue", alpha = 0.5) +
+    labs(title = paste("Property", property_num, "Predicted Sale Price"),
+         x = paste("Prediction", property_num),
+         y = "Density") +
+    theme_minimal()
+}
+
+# If plotPost doesn't work, use ggplot2 to plot posterior distributions
+plot_posterior(pred1, 1)
+plot_posterior(pred2, 2)
+plot_posterior(pred3, 3)
+plot_posterior(pred4, 4)
+plot_posterior(pred5, 5)
+
+
+```
+
+
+
